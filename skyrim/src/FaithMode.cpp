@@ -14,6 +14,7 @@
 #include "Body.h"
 #include "Collision.h"
 #include "Config.h"
+#include "HostHooks.h"
 #include "Input.h"
 #include "Viewmodel.h"
 
@@ -539,6 +540,9 @@ namespace faith
 				}
 			}
 			Notify("Faith: on");
+			if (Host().enabled) {
+				Host().enabled(true);
+			}
 		}
 
 		void StopCourse(RE::PlayerCharacter* a_player);
@@ -550,6 +554,9 @@ namespace faith
 		float lastReaction = 100.0f;
 		void ReactionTime(bool a_off = false)
 		{
+			if (Host().ownsTime) {
+				return;  // the host's time model has the multiplier
+			}
 			const float speed = a_off || !haveFrame ? 1.0f : std::clamp(frame.game_speed, 0.05f, 1.0f);
 			if (std::fabs(speed - lastGameSpeed) > 1e-3f) {
 				if (auto* timer = RE::BSTimer::GetSingleton()) {
@@ -592,6 +599,9 @@ namespace faith
 				}
 			}
 			Notify("Faith: off");
+			if (Host().enabled) {
+				Host().enabled(false);
+			}
 		}
 
 		// ---- Faith's attacks on Skyrim's actors
@@ -966,9 +976,14 @@ namespace faith
 			}
 		};
 
+		// This frame's controls, when Faith stepped (for HostHooks::afterFrame).
+		FaithInput steppedInput{};
+		bool       stepped = false;
+
 		void PerFrame(RE::PlayerCharacter* a_player, float a_delta)
 		{
 			FrameTimer timer;
+			stepped = false;
 			if (wantEnable && a_player->Get3D(false)) {
 				wantEnable = false;
 				Enable(a_player);
@@ -1128,9 +1143,17 @@ namespace faith
 					input.move_y *= 0.7f / push;
 				}
 			}
+			if (Host().ownsTime) {
+				input.reaction_pressed = 0;  // Reaction Time is off while the host has the time multiplier
+			}
+			if (Host().filterInput) {
+				Host().filterInput(a_player, input);
+			}
 			faith_step(faith, a_delta, &input, &frame);
 			timer.Mark("Faith's step");
 			haveFrame = true;
+			steppedInput = input;
+			stepped = true;
 			ReactionTime();
 			ApplyHits(a_player);
 			ApplyTakedowns(a_player, a_delta);
@@ -1511,7 +1534,12 @@ namespace faith
 			static void thunk(RE::PlayerCharacter* a_this, float a_delta)
 			{
 				func(a_this, a_delta);
-				PerFrame(a_this, a_delta);
+				const auto& host = Host();
+				const float delta = host.stepDelta ? host.stepDelta(a_delta) : a_delta;
+				PerFrame(a_this, delta);
+				if (host.afterFrame) {
+					host.afterFrame(a_this, active, stepped ? &steppedInput : nullptr, &frame, delta);
+				}
 			}
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
@@ -1638,6 +1666,9 @@ namespace faith
 
 		Input::Install();
 		logger::info("Faith installed: press {:#x} in game to switch her on and off", cfg.toggleKey);
+		if (Host().dataLoaded) {
+			Host().dataLoaded();
+		}
 	}
 
 	void OnGameLoaded()
@@ -1674,6 +1705,9 @@ namespace faith
 			wantEnable = true;
 		} else if (GetConfig().startEnabled) {
 			wantEnable = true;
+		}
+		if (Host().gameLoaded) {
+			Host().gameLoaded();
 		}
 	}
 
